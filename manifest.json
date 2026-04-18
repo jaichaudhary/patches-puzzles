@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "generated": "2026-04-18T23:38:02.159Z",
+  "difficulties": [
+    {
+      "name": "easy",
+      "count": 400,
+      "startId": 1,
+      "gridSize": 6,
+      "file": "puzzles/easy.json"
+    },
+    {
+      "name": "medium",
+      "count": 400,
+      "startId": 401,
+      "gridSize": 8,
+      "file": "puzzles/medium.json"
+    },
+    {
+      "name": "hard",
+      "count": 200,
+      "startId": 801,
+      "gridSize": 10,
+      "file": "puzzles/hard.json"
+    }
+  ]
+}
