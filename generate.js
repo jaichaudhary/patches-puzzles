@@ -1,8 +1,12 @@
 /**
  * Shikaku puzzle generator for Patches app.
- * Generates 1000 puzzles: 400 easy (6x6), 400 medium (8x8), 200 hard (10x10).
+ * Generates puzzles across 5 difficulties:
+ *   400 easy (6x6), 400 medium (8x8), 200 hard (10x10),
+ *   200 expert (12x12), 50 impossible (14x14)
+ * Expert/Impossible puzzles include 'any' shape clues (+ icon) where the
+ * player knows only the area, not the orientation.
  * Run: node generate.js
- * Output: puzzles/easy.json, puzzles/medium.json, puzzles/hard.json
+ * Output: puzzles/easy.json … puzzles/impossible.json
  */
 
 const fs = require('fs');
@@ -67,29 +71,33 @@ function partition(r1, c1, r2, c2, maxArea, stopProb) {
 // ─── Puzzle generator ───────────────────────────────────────────────────────
 
 const DIFFICULTY_CONFIG = {
-  easy:   {gridSize: 6,  maxArea: 8,  stopProb: 0.45, minPieces: 5,  maxPieces: 12},
-  medium: {gridSize: 8,  maxArea: 12, stopProb: 0.40, minPieces: 8,  maxPieces: 20},
-  hard:   {gridSize: 10, maxArea: 16, stopProb: 0.35, minPieces: 12, maxPieces: 30},
+  easy:       {gridSize: 6,  maxArea: 8,  stopProb: 0.45, minPieces: 5,  maxPieces: 12, anyChance: 0},
+  medium:     {gridSize: 8,  maxArea: 12, stopProb: 0.40, minPieces: 8,  maxPieces: 20, anyChance: 0},
+  hard:       {gridSize: 10, maxArea: 16, stopProb: 0.35, minPieces: 12, maxPieces: 30, anyChance: 0},
+  expert:     {gridSize: 12, maxArea: 20, stopProb: 0.30, minPieces: 16, maxPieces: 42, anyChance: 0.20},
+  impossible: {gridSize: 14, maxArea: 24, stopProb: 0.25, minPieces: 22, maxPieces: 56, anyChance: 0.35},
 };
 
 function generatePuzzle(id, difficulty) {
-  const {gridSize, maxArea, stopProb, minPieces, maxPieces} =
+  const {gridSize, maxArea, stopProb, minPieces, maxPieces, anyChance} =
     DIFFICULTY_CONFIG[difficulty];
 
   let rects;
-  // Retry until we get a piece count in the desired range
   let attempts = 0;
   do {
     rects = partition(0, 0, gridSize - 1, gridSize - 1, maxArea, stopProb);
     attempts++;
-    if (attempts > 200) break; // safety valve
+    if (attempts > 200) break;
   } while (rects.length < minPieces || rects.length > maxPieces);
 
   const clues = rects.map(rect => {
     const rows = rect.r2 - rect.r1 + 1;
     const cols = rect.c2 - rect.c1 + 1;
     const size = rows * cols;
-    const shape = getShape(rows, cols);
+    // Use 'any' shape for some clues in harder difficulties
+    const shape = anyChance > 0 && Math.random() < anyChance
+      ? 'any'
+      : getShape(rows, cols);
 
     // Random clue cell within rectangle
     const row = randInt(rect.r1, rect.r2);
@@ -108,9 +116,11 @@ function main() {
   if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, {recursive: true});
 
   const config = [
-    {difficulty: 'easy',   count: 400, startId: 1},
-    {difficulty: 'medium', count: 400, startId: 401},
-    {difficulty: 'hard',   count: 200, startId: 801},
+    {difficulty: 'easy',       count: 400, startId: 1},
+    {difficulty: 'medium',     count: 400, startId: 401},
+    {difficulty: 'hard',       count: 200, startId: 801},
+    {difficulty: 'expert',     count: 200, startId: 1001},
+    {difficulty: 'impossible', count: 50,  startId: 1201},
   ];
 
   for (const {difficulty, count, startId} of config) {
@@ -126,9 +136,8 @@ function main() {
     );
   }
 
-  // Manifest consumed by future app features (e.g., version checks)
   const manifest = {
-    version: 1,
+    version: 2,
     generated: new Date().toISOString(),
     difficulties: config.map(({difficulty, count, startId}) => ({
       name: difficulty,

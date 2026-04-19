@@ -1,6 +1,6 @@
 {
-  "version": 1,
-  "generated": "2026-04-18T23:38:02.159Z",
+  "version": 2,
+  "generated": "2026-04-19T00:19:05.321Z",
   "difficulties": [
     {
       "name": "easy",
@@ -22,6 +22,20 @@
       "startId": 801,
       "gridSize": 10,
       "file": "puzzles/hard.json"
+    },
+    {
+      "name": "expert",
+      "count": 200,
+      "startId": 1001,
+      "gridSize": 12,
+      "file": "puzzles/expert.json"
+    },
+    {
+      "name": "impossible",
+      "count": 50,
+      "startId": 1201,
+      "gridSize": 14,
+      "file": "puzzles/impossible.json"
     }
   ]
 }
