@@ -1,24 +1,23 @@
 /**
  * Shikaku puzzle generator for Patches app.
- * Generates puzzles across 5 difficulties:
- *   400 easy (6x6), 400 medium (8x8), 200 hard (10x10),
- *   200 expert (12x12), 50 impossible (14x14)
- * Expert/Impossible puzzles include 'any' shape clues (+ icon) where the
- * player knows only the area, not the orientation.
+ * Matches LinkedIn Patches clue style:
+ *   - Shape-only clues  (square/wide/tall icon, no number) → size: null
+ *   - Size-only clues   (dashed "any" badge with number)   → shape: 'any'
+ *   - Both clues        (shape icon + number)              → full constraint
+ *
+ * Difficulties:
+ *   400 easy (6×6), 400 medium (8×8), 200 hard (10×10),
+ *   200 expert (12×12), 50 impossible (14×14)
+ *
  * Run: node generate.js
- * Output: puzzles/easy.json … puzzles/impossible.json
  */
 
 const fs = require('fs');
 const path = require('path');
 
-// ─── RNG helpers ────────────────────────────────────────────────────────────
-
 function randInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
-
-// ─── Shape helpers ──────────────────────────────────────────────────────────
 
 function getShape(rows, cols) {
   if (rows === cols) return 'square';
@@ -26,27 +25,20 @@ function getShape(rows, cols) {
   return 'tall';
 }
 
-// ─── Grid partition ─────────────────────────────────────────────────────────
-// Recursively bisects [r1,r2]×[c1,c2] into non-overlapping rectangles.
-// stopProb controls how eagerly we stop splitting (higher = larger rectangles).
+// ─── Grid partition ──────────────────────────────────────────────────────────
 
 function partition(r1, c1, r2, c2, maxArea, stopProb) {
   const area = (r2 - r1 + 1) * (c2 - c1 + 1);
-
-  // Always stop for 1-cell areas; also stop randomly once we're small enough
   if (area <= 1 || (area <= maxArea && Math.random() < stopProb)) {
     return [{r1, c1, r2, c2}];
   }
-
-  const canH = c2 - c1 >= 1; // can split left/right (vertical cut)
-  const canV = r2 - r1 >= 1; // can split top/bottom (horizontal cut)
-
+  const canH = c2 - c1 >= 1;
+  const canV = r2 - r1 >= 1;
   if (!canH && !canV) return [{r1, c1, r2, c2}];
 
-  // Bias toward the longer axis to keep rectangles roughly square
   const rowLen = r2 - r1 + 1;
   const colLen = c2 - c1 + 1;
-  let splitH; // split along a vertical line (produces left + right halves)
+  let splitH;
   if (canH && canV) {
     splitH = colLen >= rowLen ? Math.random() < 0.6 : Math.random() < 0.4;
   } else {
@@ -68,18 +60,38 @@ function partition(r1, c1, r2, c2, maxArea, stopProb) {
   }
 }
 
-// ─── Puzzle generator ───────────────────────────────────────────────────────
+// ─── Clue type probabilities per difficulty ───────────────────────────────
+// each entry: [pBoth, pShapeOnly] — remainder is size-only ('any')
+// pBoth:      clue has shape + size (most constrained)
+// pShapeOnly: clue has shape only, size=null
+// 1-pBoth-pShapeOnly: clue has size only, shape='any'
 
-const DIFFICULTY_CONFIG = {
-  easy:       {gridSize: 6,  maxArea: 8,  stopProb: 0.45, minPieces: 5,  maxPieces: 12, anyChance: 0},
-  medium:     {gridSize: 8,  maxArea: 12, stopProb: 0.40, minPieces: 8,  maxPieces: 20, anyChance: 0},
-  hard:       {gridSize: 10, maxArea: 16, stopProb: 0.35, minPieces: 12, maxPieces: 30, anyChance: 0},
-  expert:     {gridSize: 12, maxArea: 20, stopProb: 0.30, minPieces: 16, maxPieces: 42, anyChance: 0.20},
-  impossible: {gridSize: 14, maxArea: 24, stopProb: 0.25, minPieces: 22, maxPieces: 56, anyChance: 0.35},
+const CLUE_PROBS = {
+  easy:       [0.55, 0.35],  // 55% both, 35% shape-only, 10% any+size
+  medium:     [0.35, 0.40],  // 35% both, 40% shape-only, 25% any+size
+  hard:       [0.20, 0.45],  // 20% both, 45% shape-only, 35% any+size
+  expert:     [0.10, 0.45],  // 10% both, 45% shape-only, 45% any+size
+  impossible: [0.05, 0.35],  // 5%  both, 35% shape-only, 60% any+size
 };
 
+const DIFFICULTY_CONFIG = {
+  easy:       {gridSize: 6,  maxArea: 8,  stopProb: 0.45, minPieces: 5,  maxPieces: 12},
+  medium:     {gridSize: 8,  maxArea: 12, stopProb: 0.40, minPieces: 8,  maxPieces: 20},
+  hard:       {gridSize: 10, maxArea: 16, stopProb: 0.35, minPieces: 12, maxPieces: 30},
+  expert:     {gridSize: 12, maxArea: 20, stopProb: 0.30, minPieces: 16, maxPieces: 42},
+  impossible: {gridSize: 14, maxArea: 24, stopProb: 0.25, minPieces: 22, maxPieces: 56},
+};
+
+function pickClueType(difficulty) {
+  const [pBoth, pShape] = CLUE_PROBS[difficulty];
+  const r = Math.random();
+  if (r < pBoth) return 'both';
+  if (r < pBoth + pShape) return 'shape';
+  return 'any';
+}
+
 function generatePuzzle(id, difficulty) {
-  const {gridSize, maxArea, stopProb, minPieces, maxPieces, anyChance} =
+  const {gridSize, maxArea, stopProb, minPieces, maxPieces} =
     DIFFICULTY_CONFIG[difficulty];
 
   let rects;
@@ -94,22 +106,25 @@ function generatePuzzle(id, difficulty) {
     const rows = rect.r2 - rect.r1 + 1;
     const cols = rect.c2 - rect.c1 + 1;
     const size = rows * cols;
-    // Use 'any' shape for some clues in harder difficulties
-    const shape = anyChance > 0 && Math.random() < anyChance
-      ? 'any'
-      : getShape(rows, cols);
-
-    // Random clue cell within rectangle
+    const shape = getShape(rows, cols);
     const row = randInt(rect.r1, rect.r2);
     const col = randInt(rect.c1, rect.c2);
 
-    return {row, col, size, shape};
+    const type = pickClueType(difficulty);
+    if (type === 'both') {
+      return {row, col, size, shape};
+    } else if (type === 'shape') {
+      return {row, col, size: null, shape};
+    } else {
+      // size-only: 'any' shape
+      return {row, col, size, shape: 'any'};
+    }
   });
 
   return {id, difficulty, gridSize, clues};
 }
 
-// ─── Main ────────────────────────────────────────────────────────────────────
+// ─── Main ─────────────────────────────────────────────────────────────────
 
 function main() {
   const outDir = path.join(__dirname, 'puzzles');
@@ -128,7 +143,6 @@ function main() {
     for (let i = 0; i < count; i++) {
       puzzles.push(generatePuzzle(startId + i, difficulty));
     }
-
     const outPath = path.join(outDir, `${difficulty}.json`);
     fs.writeFileSync(outPath, JSON.stringify({puzzles}));
     console.log(
@@ -137,7 +151,7 @@ function main() {
   }
 
   const manifest = {
-    version: 2,
+    version: 3,
     generated: new Date().toISOString(),
     difficulties: config.map(({difficulty, count, startId}) => ({
       name: difficulty,
@@ -152,7 +166,6 @@ function main() {
     JSON.stringify(manifest, null, 2),
   );
   console.log('✓ manifest.json');
-  console.log('\nDone! Push the puzzle-generator/ folder contents to your GitHub repo.');
 }
 
 main();
