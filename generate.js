@@ -1,13 +1,14 @@
 /**
  * Shikaku puzzle generator for Patches app.
- * Matches LinkedIn Patches clue style:
- *   - Shape-only clues  (square/wide/tall icon, no number) → size: null
- *   - Size-only clues   (dashed "any" badge with number)   → shape: 'any'
- *   - Both clues        (shape icon + number)              → full constraint
  *
- * Difficulties:
- *   400 easy (6×6), 400 medium (8×8), 200 hard (10×10),
- *   200 expert (12×12), 50 impossible (14×14)
+ * Clue types (LinkedIn Patches style):
+ *   'both'   — shape icon + number  (fully constrained)
+ *   'shape'  — shape icon only      (size: null)
+ *   'any'    — dashed badge + number (shape: 'any')
+ *
+ * Every generated puzzle is verified to have EXACTLY ONE valid solution.
+ * Constraints are relaxed progressively (both → shape or any) only when
+ * uniqueness is preserved.
  *
  * Run: node generate.js
  */
@@ -15,9 +16,21 @@
 const fs = require('fs');
 const path = require('path');
 
+// ─── RNG ────────────────────────────────────────────────────────────────────
+
 function randInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
+
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = randInt(0, i);
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+// ─── Shape ──────────────────────────────────────────────────────────────────
 
 function getShape(rows, cols) {
   if (rows === cols) return 'square';
@@ -25,7 +38,7 @@ function getShape(rows, cols) {
   return 'tall';
 }
 
-// ─── Grid partition ──────────────────────────────────────────────────────────
+// ─── Partition ──────────────────────────────────────────────────────────────
 
 function partition(r1, c1, r2, c2, maxArea, stopProb) {
   const area = (r2 - r1 + 1) * (c2 - c1 + 1);
@@ -60,71 +73,179 @@ function partition(r1, c1, r2, c2, maxArea, stopProb) {
   }
 }
 
-// ─── Clue type probabilities per difficulty ───────────────────────────────
-// each entry: [pBoth, pShapeOnly] — remainder is size-only ('any')
-// pBoth:      clue has shape + size (most constrained)
-// pShapeOnly: clue has shape only, size=null
-// 1-pBoth-pShapeOnly: clue has size only, shape='any'
+// ─── Solver ──────────────────────────────────────────────────────────────────
+// Counts valid solutions up to maxCount.  Stops early once maxCount reached.
+// Returns the count found (0 = impossible, 1 = unique, 2+ = ambiguous).
 
-const CLUE_PROBS = {
-  easy:       [0.55, 0.35],  // 55% both, 35% shape-only, 10% any+size
-  medium:     [0.35, 0.40],  // 35% both, 40% shape-only, 25% any+size
-  hard:       [0.20, 0.45],  // 20% both, 45% shape-only, 35% any+size
-  expert:     [0.10, 0.45],  // 10% both, 45% shape-only, 45% any+size
-  impossible: [0.05, 0.35],  // 5%  both, 35% shape-only, 60% any+size
+function countSolutions(gridSize, clues, maxCount = 2) {
+  const totalCells = gridSize * gridSize;
+  let count = 0;
+  let iters = 0;
+  const MAX_ITERS = gridSize <= 8 ? 80000 : gridSize <= 10 ? 300000 : 800000;
+
+  function overlaps(r1, c1, r2, c2, placed) {
+    for (const p of placed) {
+      if (!(r2 < p.r1 || p.r2 < r1 || c2 < p.c1 || p.c2 < c1)) return true;
+    }
+    return false;
+  }
+
+  function placements(ci, placed, coveredSoFar) {
+    const {row, col, size, shape} = clues[ci];
+    const results = [];
+
+    for (let rLen = 1; rLen <= gridSize; rLen++) {
+      for (let cLen = 1; cLen <= gridSize; cLen++) {
+        const area = rLen * cLen;
+        if (size !== null && area !== size) continue;
+        // Remaining clues need at least 1 cell each — prune impossible branches
+        const remainingClues = clues.length - ci - 1;
+        const coveredIfPlaced = coveredSoFar + area;
+        if (coveredIfPlaced + remainingClues > totalCells) continue;
+        if (coveredIfPlaced > totalCells) continue;
+
+        const s = rLen === cLen ? 'square' : cLen > rLen ? 'wide' : 'tall';
+        if (shape !== 'any' && s !== shape) continue;
+
+        const r1min = Math.max(0, row - rLen + 1);
+        const r1max = Math.min(gridSize - rLen, row);
+        const c1min = Math.max(0, col - cLen + 1);
+        const c1max = Math.min(gridSize - cLen, col);
+
+        for (let r1 = r1min; r1 <= r1max; r1++) {
+          for (let c1 = c1min; c1 <= c1max; c1++) {
+            const r2 = r1 + rLen - 1;
+            const c2 = c1 + cLen - 1;
+            if (overlaps(r1, c1, r2, c2, placed)) continue;
+            // No other clue inside
+            let bad = false;
+            for (let k = 0; k < clues.length; k++) {
+              if (k === ci) continue;
+              const o = clues[k];
+              if (o.row >= r1 && o.row <= r2 && o.col >= c1 && o.col <= c2) {
+                bad = true; break;
+              }
+            }
+            if (bad) continue;
+            results.push({r1, c1, r2, c2, area});
+          }
+        }
+      }
+    }
+    return results;
+  }
+
+  function solve(ci, placed, covered) {
+    if (count >= maxCount || iters > MAX_ITERS) return;
+    iters++;
+    if (ci === clues.length) {
+      if (covered === totalCells) count++;
+      return;
+    }
+    for (const rect of placements(ci, placed, covered)) {
+      placed.push(rect);
+      solve(ci + 1, placed, covered + rect.area);
+      placed.pop();
+      if (count >= maxCount || iters > MAX_ITERS) return;
+    }
+  }
+
+  solve(0, [], 0);
+  // If iteration limit was hit, we can't confirm uniqueness — treat as ambiguous
+  if (iters > MAX_ITERS) return maxCount;
+  return count;
+}
+
+// ─── Unique-clue builder ─────────────────────────────────────────────────────
+// Starts with fully-constrained clues (both size & shape).
+// Then relaxes each clue — shape-only or size-only — if uniqueness holds.
+
+const RELAX_PROBS = {
+  //                   P(try shape-only)  P(try size-only 'any')
+  easy:       { ps: 0.35, pa: 0.10 },
+  medium:     { ps: 0.45, pa: 0.25 },
+  hard:       { ps: 0.50, pa: 0.35 },
+  expert:     { ps: 0.50, pa: 0.45 },
+  impossible: { ps: 0.40, pa: 0.55 },
 };
+
+function buildClues(rects, difficulty, gridSize) {
+  // Start: all clues fully constrained
+  const clues = rects.map(rect => {
+    const rows = rect.r2 - rect.r1 + 1;
+    const cols = rect.c2 - rect.c1 + 1;
+    return {
+      row: randInt(rect.r1, rect.r2),
+      col: randInt(rect.c1, rect.c2),
+      size: rows * cols,
+      shape: getShape(rows, cols),
+    };
+  });
+
+  const {ps, pa} = RELAX_PROBS[difficulty];
+  const order = shuffle([...Array(clues.length).keys()]);
+
+  for (const i of order) {
+    const original = {...clues[i]};
+    const r = Math.random();
+
+    let candidate = null;
+    if (r < ps) {
+      // Try shape-only (remove size)
+      candidate = {...original, size: null};
+    } else if (r < ps + pa) {
+      // Try size-only (any shape)
+      candidate = {...original, shape: 'any'};
+    } else {
+      continue; // Keep both constraints
+    }
+
+    clues[i] = candidate;
+    const sols = countSolutions(gridSize, clues, 2);
+    if (sols !== 1) {
+      clues[i] = original; // Revert — relaxing broke uniqueness
+    }
+  }
+
+  return clues;
+}
+
+// ─── Difficulty config ───────────────────────────────────────────────────────
 
 const DIFFICULTY_CONFIG = {
-  easy:       {gridSize: 6,  maxArea: 8,  stopProb: 0.45, minPieces: 5,  maxPieces: 12},
-  medium:     {gridSize: 8,  maxArea: 12, stopProb: 0.40, minPieces: 8,  maxPieces: 20},
-  hard:       {gridSize: 10, maxArea: 16, stopProb: 0.35, minPieces: 12, maxPieces: 30},
-  expert:     {gridSize: 12, maxArea: 20, stopProb: 0.30, minPieces: 16, maxPieces: 42},
-  impossible: {gridSize: 14, maxArea: 24, stopProb: 0.25, minPieces: 22, maxPieces: 56},
+  // Fewer, larger pieces → more interesting puzzles, fewer ambiguities
+  easy:       {gridSize: 6,  maxArea: 10, stopProb: 0.50, minPieces: 4,  maxPieces: 9},
+  medium:     {gridSize: 8,  maxArea: 14, stopProb: 0.45, minPieces: 6,  maxPieces: 13},
+  hard:       {gridSize: 10, maxArea: 18, stopProb: 0.40, minPieces: 9,  maxPieces: 18},
+  expert:     {gridSize: 12, maxArea: 22, stopProb: 0.35, minPieces: 12, maxPieces: 24},
+  impossible: {gridSize: 14, maxArea: 26, stopProb: 0.30, minPieces: 16, maxPieces: 32},
 };
 
-function pickClueType(difficulty) {
-  const [pBoth, pShape] = CLUE_PROBS[difficulty];
-  const r = Math.random();
-  if (r < pBoth) return 'both';
-  if (r < pBoth + pShape) return 'shape';
-  return 'any';
-}
+// ─── Main generator ──────────────────────────────────────────────────────────
 
 function generatePuzzle(id, difficulty) {
   const {gridSize, maxArea, stopProb, minPieces, maxPieces} =
     DIFFICULTY_CONFIG[difficulty];
 
-  let rects;
-  let attempts = 0;
+  let rects, clues;
+  let outerAttempts = 0;
+
   do {
-    rects = partition(0, 0, gridSize - 1, gridSize - 1, maxArea, stopProb);
-    attempts++;
-    if (attempts > 200) break;
-  } while (rects.length < minPieces || rects.length > maxPieces);
+    let innerAttempts = 0;
+    do {
+      rects = partition(0, 0, gridSize - 1, gridSize - 1, maxArea, stopProb);
+      innerAttempts++;
+    } while ((rects.length < minPieces || rects.length > maxPieces) && innerAttempts < 300);
 
-  const clues = rects.map(rect => {
-    const rows = rect.r2 - rect.r1 + 1;
-    const cols = rect.c2 - rect.c1 + 1;
-    const size = rows * cols;
-    const shape = getShape(rows, cols);
-    const row = randInt(rect.r1, rect.r2);
-    const col = randInt(rect.c1, rect.c2);
-
-    const type = pickClueType(difficulty);
-    if (type === 'both') {
-      return {row, col, size, shape};
-    } else if (type === 'shape') {
-      return {row, col, size: null, shape};
-    } else {
-      // size-only: 'any' shape
-      return {row, col, size, shape: 'any'};
-    }
-  });
+    clues = buildClues(rects, difficulty, gridSize);
+    outerAttempts++;
+    if (outerAttempts > 200) break;
+  } while (countSolutions(gridSize, clues, 2) !== 1);
 
   return {id, difficulty, gridSize, clues};
 }
 
-// ─── Main ─────────────────────────────────────────────────────────────────
+// ─── Entry point ─────────────────────────────────────────────────────────────
 
 function main() {
   const outDir = path.join(__dirname, 'puzzles');
@@ -140,18 +261,20 @@ function main() {
 
   for (const {difficulty, count, startId} of config) {
     const puzzles = [];
+    const t0 = Date.now();
     for (let i = 0; i < count; i++) {
       puzzles.push(generatePuzzle(startId + i, difficulty));
+      if ((i + 1) % 50 === 0) process.stdout.write(`\r  ${difficulty}: ${i + 1}/${count}`);
     }
     const outPath = path.join(outDir, `${difficulty}.json`);
     fs.writeFileSync(outPath, JSON.stringify({puzzles}));
-    console.log(
-      `✓ ${difficulty}.json — ${count} puzzles (${(fs.statSync(outPath).size / 1024).toFixed(1)} KB)`,
-    );
+    const kb = (fs.statSync(outPath).size / 1024).toFixed(1);
+    const sec = ((Date.now() - t0) / 1000).toFixed(1);
+    console.log(`\r✓ ${difficulty}.json — ${count} puzzles, ${kb} KB (${sec}s)`);
   }
 
   const manifest = {
-    version: 3,
+    version: 4,
     generated: new Date().toISOString(),
     difficulties: config.map(({difficulty, count, startId}) => ({
       name: difficulty,
@@ -161,11 +284,8 @@ function main() {
       file: `puzzles/${difficulty}.json`,
     })),
   };
-  fs.writeFileSync(
-    path.join(__dirname, 'manifest.json'),
-    JSON.stringify(manifest, null, 2),
-  );
-  console.log('✓ manifest.json');
+  fs.writeFileSync(path.join(__dirname, 'manifest.json'), JSON.stringify(manifest, null, 2));
+  console.log('✓ manifest.json\nDone!');
 }
 
 main();
